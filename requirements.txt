@@ -1,7 +1,7 @@
 Flask==3.0.0
 gunicorn==21.2.0
 joblib==1.3.2
-pandas==2.1.4
+pandas==1.5.3  # Downgraded to stable version
+numpy==1.24.3  # Compatible with pandas 1.5.3
 yfinance==0.2.31
-numpy==1.26.2
 scikit-learn==1.3.2
