@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Oil Price Forecast</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css">
+    <style>
+        body { background-color: #f8f9fa; }
+        .card { border-radius: 15px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+        .card-header { border-radius: 15px 15px 0 0 !important; }
+        .chart-container { position: relative; height: 60vh; }
+        .summary-card { transition: transform 0.3s; }
+        .summary-card:hover { transform: translateY(-5px); }
+        .market-open { color: #198754; }
+        .market-closed { color: #dc3545; }
+        .data-point { display: flex; justify-content: space-between; }
+        .data-label { font-weight: bold; }
+        .summary-container { display: flex; flex-direction: column; gap: 15px; }
+    </style>
+</head>
+<body>
+    <nav class="navbar navbar-dark bg-dark">
+        <div class="container">
+            <a class="navbar-brand" href="#">
+                <i class="bi bi-graph-up"></i> Oil Price Forecast
+            </a>
+        </div>
+    </nav>
+
+    <div class="container py-4">
+        <div class="text-center mb-4">
+            <h1 class="display-4">Crude Oil Price Predictions</h1>
+            <p class="lead">AI-powered forecasts for West Texas Intermediate (WTI) crude oil</p>
+            <button id="refreshBtn" class="btn btn-primary">
+                <i class="bi bi-arrow-repeat"></i> Refresh Forecasts
+            </button>
+            <div class="mt-2">
+                <span id="marketStatus" class="badge bg-secondary">Checking market status...</span>
+                <span id="lastUpdated" class="text-muted ms-2">Last updated: --:--:--</span>
+            </div>
+        </div>
+
+        <div class="alert alert-info">
+            <div class="data-point">
+                <span>Latest actual price:</span>
+                <strong id="currentPrice">Loading...</strong>
+            </div>
+            <div class="data-point">
+                <span>As of:</span>
+                <strong id="currentDate">Loading...</strong>
+            </div>
+            <div class="data-point">
+                <span>Change since last refresh:</span>
+                <span id="priceChange">--</span>
+            </div>
+        </div>
+
+        <div class="row mb-4">
+            <div class="col-md-7 mb-3">
+                <div class="card h-100">
+                    <div class="card-header bg-primary text-white">
+                        <h5 class="mb-0">Price Forecast Timeline</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="chart-container">
+                            <canvas id="forecastChart"></canvas>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="col-md-5">
+                <div class="card h-100">
+                    <div class="card-header bg-success text-white">
+                        <h5 class="mb-0">Forecast Summary</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="summary-container" id="forecastSummary">
+                            <!-- Forecast cards will be inserted here in order -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card mb-4">
+            <div class="card-header bg-warning">
+                <h5 class="mb-0">Detailed Forecast Data</h5>
+            </div>
+            <div class="card-body">
+                <div class="table-responsive">
+                    <table class="table table-hover" id="forecastTable">
+                        <thead class="table-light">
+                            <tr>
+                                <th>Time Period</th>
+                                <th>Days</th>
+                                <th>Forecasted Price</th>
+                                <th>Change</th>
+                                <th>Prediction Date</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <!-- Filled by JavaScript -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+        
+        <div class="card">
+            <div class="card-header bg-info text-white">
+                <h5 class="mb-0">Forecast Details</h5>
+            </div>
+            <div class="card-body" id="forecastDetails">
+                <p>Select a forecast period to see detailed predictions...</p>
+            </div>
+        </div>
+    </div>
+
+    <footer class="bg-dark text-white py-3">
+        <div class="container text-center">
+            <p class="mb-0">Oil Price Forecasting System &copy; 2023 | Powered by AI | Data from Yahoo Finance</p>
+        </div>
+    </footer>
+
+    <script>
+        // DOM Elements
+        const forecastChart = document.getElementById('forecastChart').getContext('2d');
+        const forecastSummary = document.getElementById('forecastSummary');
+        const forecastTable = document.querySelector('#forecastTable tbody');
+        const forecastDetails = document.getElementById('forecastDetails');
+        const currentPriceEl = document.getElementById('currentPrice');
+        const currentDateEl = document.getElementById('currentDate');
+        const refreshBtn = document.getElementById('refreshBtn');
+        const priceChangeEl = document.getElementById('priceChange');
+        const marketStatusEl = document.getElementById('marketStatus');
+        const lastUpdatedEl = document.getElementById('lastUpdated');
+        
+        // Chart object
+        let priceChart;
+        let currentForecastData = null;
+        
+        // Format currency
+        const formatter = new Intl.NumberFormat('en-US', {
+            style: 'currency',
+            currency: 'USD',
+            minimumFractionDigits: 2
+        });
+        
+        // Format percentage
+        const percentFormatter = new Intl.NumberFormat('en-US', {
+            style: 'percent',
+            minimumFractionDigits: 2
+        });
+        
+        // Track previous price for change calculation
+        let previousPrice = null;
+
+        // Market hours (9:30 AM to 4:00 PM ET)
+        const MARKET_OPEN_HOUR = 9.5;  // 9:30 AM = 9.5
+        const MARKET_CLOSE_HOUR = 16; // 4:00 PM
+
+        // Check if market is open
+        function isMarketOpen() {
+            const now = new Date();
+            const utcHours = now.getUTCHours();
+            const utcMinutes = now.getUTCMinutes();
+            const utcTime = utcHours + utcMinutes/60;
+            
+            // Convert ET to UTC (ET is UTC-4 during daylight saving)
+            const etTime = (utcTime - 4) % 24;
+            if (etTime < 0) etTime += 24;
+            
+            return (etTime >= MARKET_OPEN_HOUR && etTime < MARKET_CLOSE_HOUR) && 
+                   (now.getDay() >= 1 && now.getDay() <= 5);
+        }
+
+        // Update market status indicator
+        function updateMarketStatus() {
+            const marketOpen = isMarketOpen();
+            marketStatusEl.textContent = marketOpen ? "MARKET OPEN" : "MARKET CLOSED";
+            marketStatusEl.className = `badge ${marketOpen ? 'bg-success' : 'bg-danger'}`;
+            return marketOpen;
+        }
+
+        // Update last updated timestamp
+        function updateTimestamp() {
+            const now = new Date();
+            lastUpdatedEl.textContent = `Last updated: ${now.toLocaleTimeString()}`;
+        }
+
+        // Load forecast data
+        async function loadForecast() {
+            try {
+                showLoading();
+                
+                // First check if server is alive
+                const healthResponse = await fetch('/health');
+                if (!healthResponse.ok) {
+                    throw new Error('Server not responding');
+                }
+                
+                const response = await fetch('/predict');
+                if (!response.ok) {
+                    throw new Error(`API error: ${response.status}`);
+                }
+                
+                const data = await response.json();
+                
+                if (data.error) {
+                    throw new Error(data.error);
+                }
+                
+                currentForecastData = data;
+                renderForecast(data);
+            } catch (error) {
+                console.error('Error loading forecast:', error);
+                alert(`Error: ${error.message}`);
+            } finally {
+                hideLoading();
+                updateMarketStatus();
+                updateTimestamp();
+            }
+        }
+        
+        // Display forecast data in chronological order
+        function renderForecast(data) {
+            // Calculate price change
+            const currentPrice = data.last_actual_price;
+            const priceChange = previousPrice ? currentPrice - previousPrice : 0;
+            previousPrice = currentPrice;
+            
+            // Update current price
+            currentPriceEl.textContent = formatter.format(currentPrice);
+            currentDateEl.textContent = data.last_actual_date;
+            
+            // Format price change
+            if (priceChange !== 0) {
+                const changePercent = priceChange / (currentPrice - priceChange);
+                priceChangeEl.textContent = `${priceChange > 0 ? '↑' : '↓'} ${formatter.format(Math.abs(priceChange))} (${percentFormatter.format(Math.abs(changePercent))})`;
+                priceChangeEl.className = priceChange > 0 ? 'text-success' : 'text-danger';
+            } else {
+                priceChangeEl.textContent = '--';
+                priceChangeEl.className = '';
+            }
+            
+            // Prepare datasets for chart
+            const allDates = [data.last_actual_date];
+            const allPrices = [data.last_actual_price];
+            const allLabels = ['Actual'];
+            
+            // Define the forecast periods in chronological order
+            const periodsOrder = [30, 90, 180, 270, 365];
+            
+            let summaryHTML = '';
+            let tableHTML = '';
+            
+            // Process each forecast period in chronological order
+            for (const days of periodsOrder) {
+                const periodKey = `${days}_days`;
+                const forecast = data.forecasts[periodKey];
+                
+                if (!forecast || forecast.error) {
+                    console.error(`Skipping forecast for ${days} days: ${forecast?.error || 'No data'}`);
+                    continue;
+                }
+                
+                const lastForecastPrice = forecast.predicted[forecast.predicted.length - 1];
+                const lastForecastDate = forecast.predicted_dates[forecast.predicted_dates.length - 1];
+                
+                // Calculate change from current price
+                const priceChange = lastForecastPrice - data.last_actual_price;
+                const percentChange = priceChange / data.last_actual_price;
+                
+                // Add to chart data
+                allDates.push(lastForecastDate);
+                allPrices.push(lastForecastPrice);
+                allLabels.push(`${days} days`);
+                
+                // Generate summary card
+                summaryHTML += `
+                    <div class="card summary-card h-100 ${percentChange > 0 ? 'border-success' : 'border-danger'}">
+                        <div class="card-body">
+                            <h5 class="card-title">${getPeriodName(days)} Forecast</h5>
+                            <div class="d-flex justify-content-between align-items-center">
+                                <div>
+                                    <h3 class="card-text">${formatter.format(lastForecastPrice)}</h3>
+                                    <p class="card-text ${percentChange > 0 ? 'text-success' : 'text-danger'}">
+                                        ${percentChange > 0 ? '↑' : '↓'} 
+                                        ${formatter.format(Math.abs(priceChange))} 
+                                        (${percentFormatter.format(Math.abs(percentChange))})
+                                    </p>
+                                </div>
+                                <button class="btn btn-outline-primary btn-sm" 
+                                        onclick="showForecastDetails(${days})">
+                                    View Details
+                                </button>
+                            </div>
+                            <p class="text-muted small mb-0">Forecast for ${lastForecastDate}</p>
+                        </div>
+                    </div>
+                `;
+                
+                // Add to table
+                tableHTML += `
+                    <tr>
+                        <td>${getPeriodName(days)}</td>
+                        <td>${days}</td>
+                        <td>${formatter.format(lastForecastPrice)}</td>
+                        <td class="${percentChange > 0 ? 'text-success' : 'text-danger'}">
+                            ${percentChange > 0 ? '+' : ''}${percentFormatter.format(percentChange)}
+                        </td>
+                        <td>${lastForecastDate}</td>
+                    </tr>
+                `;
+            }
+            
+            // Update DOM
+            forecastSummary.innerHTML = summaryHTML;
+            forecastTable.innerHTML = tableHTML;
+            
+            // Create/update chart
+            if (priceChart) {
+                priceChart.destroy();
+            }
+            
+            priceChart = new Chart(forecastChart, {
+                type: 'line',
+                data: {
+                    labels: allDates,
+                    datasets: [{
+                        label: 'Oil Price Forecast',
+                        data: allPrices,
+                        borderColor: '#0d6efd',
+                        backgroundColor: 'rgba(13, 110, 253, 0.1)',
+                        pointBackgroundColor: allLabels.map((_, i) => i === 0 ? '#000' : '#dc3545'),
+                        pointRadius: 6,
+                        pointHoverRadius: 8,
+                        tension: 0.3,
+                        fill: true
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        tooltip: {
+                            callbacks: {
+                                label: (context) => {
+                                    return `${formatter.format(context.parsed.y)} (${allLabels[context.dataIndex]})`;
+                                }
+                            }
+                        },
+                        legend: {
+                            display: false
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: false,
+                            title: {
+                                display: true,
+                                text: 'Price (USD)'
+                            }
+                        },
+                        x: {
+                            title: {
+                                display: true,
+                                text: 'Date'
+                            },
+                            ticks: {
+                                maxRotation: 45,
+                                minRotation: 45
+                            }
+                        }
+                    }
+                }
+            });
+        }
+        
+        // Show forecast details
+        function showForecastDetails(days) {
+            if (!currentForecastData) return;
+            
+            const forecast = currentForecastData.forecasts[`${days}_days`];
+            if (!forecast || forecast.error) {
+                forecastDetails.innerHTML = `<div class="alert alert-danger">No forecast data available for ${days} days</div>`;
+                return;
+            }
+            
+            let detailsHTML = `
+                <h4>${getPeriodName(days)} Price Forecast</h4>
+                <p>Starting from ${currentForecastData.last_actual_date}</p>
+                <div class="table-responsive">
+                    <table class="table table-striped">
+                        <thead>
+                            <tr>
+                                <th>Date</th>
+                                <th>Forecasted Price</th>
+                                <th>Change from Start</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+            `;
+            
+            const startPrice = currentForecastData.last_actual_price;
+            for (let i = 0; i < forecast.predicted.length; i++) {
+                const price = forecast.predicted[i];
+                const date = forecast.predicted_dates[i];
+                const change = price - startPrice;
+                const percentChange = change / startPrice;
+                
+                detailsHTML += `
+                    <tr>
+                        <td>${date}</td>
+                        <td>${formatter.format(price)}</td>
+                        <td class="${change >= 0 ? 'text-success' : 'text-danger'}">
+                            ${change >= 0 ? '+' : ''}${formatter.format(change)} 
+                            (${percentFormatter.format(percentChange)})
+                        </td>
+                    </tr>
+                `;
+            }
+            
+            detailsHTML += `
+                        </tbody>
+                    </table>
+                </div>
+                <button class="btn btn-outline-secondary" onclick="showForecastChart(${days})">
+                    <i class="bi bi-graph-up"></i> Show Chart
+                </button>
+            `;
+            
+            forecastDetails.innerHTML = detailsHTML;
+        }
+        
+        // Helper function to get period name
+        function getPeriodName(days) {
+            const periodNames = {
+                30: '1 Month',
+                90: '3 Months',
+                180: '6 Months',
+                270: '9 Months',
+                365: '1 Year'
+            };
+            return periodNames[days] || `${days} Days`;
+        }
+        
+        // Show loading state
+        function showLoading() {
+            refreshBtn.disabled = true;
+            refreshBtn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status"></span> Loading...';
+        }
+        
+        // Hide loading state
+        function hideLoading() {
+            refreshBtn.disabled = false;
+            refreshBtn.innerHTML = '<i class="bi bi-arrow-repeat"></i> Refresh Forecasts';
+        }
+        
+        // Event listeners
+        refreshBtn.addEventListener('click', loadForecast);
+        
+        // Initial load
+        document.addEventListener('DOMContentLoaded', () => {
+            loadForecast();
+            updateMarketStatus();
+            updateTimestamp();
+            
+            // Auto-refresh every 5 minutes during market hours
+            setInterval(() => {
+                if (isMarketOpen()) {
+                    loadForecast();
+                }
+            }, 5 * 60 * 1000);
+            
+            // Update timestamp every minute
+            setInterval(updateTimestamp, 60 * 1000);
+        });
+    </script>
+</body>
+</html>
