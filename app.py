@@ -1,3 +1,22 @@
+# Add this before any other imports
+import sys
+import os
+
+# Fix numpy import issues
+try:
+    import numpy as np
+except ImportError:
+    # Attempt to recover from broken numpy installation
+    import subprocess
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "--force-reinstall", "numpy==1.26.2"])
+    import numpy as np
+
+# Now continue with other imports
+from flask import Flask, jsonify, render_template
+import joblib
+# ... rest of your imports ...
+
+
 from flask import Flask, jsonify, render_template
 import joblib
 import pandas as pd
@@ -35,24 +54,29 @@ try:
     
     if os.path.exists(model_path):
         try:
+            # First attempt with default loader
             model = joblib.load(model_path)
-            logger.info("Model loaded successfully!")
+            logger.info("Model loaded successfully with default method!")
         except Exception as e:
-            logger.error(f"Model loading failed: {e}")
+            logger.error(f"Default load failed: {e}")
             logger.error(traceback.format_exc())
             
-            # Try with different protocols
+            # Second attempt with mmap_mode
             try:
-                logger.info("Trying with protocol=4")
-                model = joblib.load(model_path, mmap_mode='r+')
-                logger.info("Model loaded successfully with protocol=4!")
-            except:
+                logger.info("Trying with mmap_mode='r'")
+                model = joblib.load(model_path, mmap_mode='r')
+                logger.info("Model loaded successfully with mmap_mode!")
+            except Exception as e2:
+                logger.error(f"mmap_mode load failed: {e2}")
+                
+                # Third attempt with unsafe pickle
                 try:
-                    logger.info("Trying with protocol=5")
-                    model = joblib.load(model_path, mmap_mode='r+')
-                    logger.info("Model loaded successfully with protocol=5!")
-                except Exception as e2:
-                    logger.error(f"All loading attempts failed: {e2}")
+                    logger.info("Trying with unsafe pickle")
+                    with open(model_path, 'rb') as f:
+                        model = joblib.load(f)
+                    logger.info("Model loaded successfully with unsafe pickle!")
+                except Exception as e3:
+                    logger.error(f"All loading attempts failed: {e3}")
     else:
         logger.critical(f"Model file not found at: {model_path}")
 except Exception as e:
