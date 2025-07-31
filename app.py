@@ -14,11 +14,6 @@ except ImportError:
 # Now continue with other imports
 from flask import Flask, jsonify, render_template
 import joblib
-# ... rest of your imports ...
-
-
-from flask import Flask, jsonify, render_template
-import joblib
 import pandas as pd
 import yfinance as yf
 from datetime import datetime, timedelta
@@ -47,33 +42,37 @@ last_point = {
     'date': datetime.now()
 }
 
-# ====================== MODEL LOADING WITH ROBUST ERROR HANDLING ======================
+# ====================== MODEL LOADING WITH NUMPY FIX ======================
 try:
+    import numpy as np  # Ensure numpy is imported first
+    from joblib import load
+    
     model_path = os.path.join(APP_ROOT, 'trained_oil_price_model.sav')
     logger.info(f"Attempting to load model from: {model_path}")
     
     if os.path.exists(model_path):
         try:
             # First attempt with default loader
-            model = joblib.load(model_path)
+            model = load(model_path)
             logger.info("Model loaded successfully with default method!")
         except Exception as e:
             logger.error(f"Default load failed: {e}")
-            logger.error(traceback.format_exc())
             
-            # Second attempt with mmap_mode
+            # Second attempt with context manager
             try:
-                logger.info("Trying with mmap_mode='r'")
-                model = joblib.load(model_path, mmap_mode='r')
-                logger.info("Model loaded successfully with mmap_mode!")
+                logger.info("Trying with context manager")
+                with open(model_path, 'rb') as f:
+                    model = load(f)
+                logger.info("Model loaded successfully with context manager!")
             except Exception as e2:
-                logger.error(f"mmap_mode load failed: {e2}")
+                logger.error(f"Context manager load failed: {e2}")
                 
                 # Third attempt with unsafe pickle
                 try:
                     logger.info("Trying with unsafe pickle")
+                    import pickle
                     with open(model_path, 'rb') as f:
-                        model = joblib.load(f)
+                        model = pickle.load(f)
                     logger.info("Model loaded successfully with unsafe pickle!")
                 except Exception as e3:
                     logger.error(f"All loading attempts failed: {e3}")
@@ -90,8 +89,16 @@ try:
     
     if os.path.exists(last_point_path):
         last_point = joblib.load(last_point_path)
+        # Ensure date is always a datetime object
         if isinstance(last_point['date'], str):
-            last_point['date'] = datetime.strptime(last_point['date'], '%Y-%m-%d')
+            # Handle both date-only and datetime formats
+            try:
+                last_point['date'] = datetime.strptime(last_point['date'], '%Y-%m-%d %H:%M:%S')
+            except:
+                try:
+                    last_point['date'] = datetime.strptime(last_point['date'], '%Y-%m-%d')
+                except:
+                    last_point['date'] = datetime.now()
         logger.info(f"Last data point: {last_point['date']} - ${last_point['close']:.2f}")
     else:
         logger.warning(f"Last data point file not found at: {last_point_path}")
@@ -138,8 +145,23 @@ def safe_float(value):
     except:
         return 0.0
 
+def update_last_point(price, date):
+    """Update the last data point and save to disk"""
+    global last_point
+    last_point = {
+        'close': price,
+        'date': date
+    }
+    try:
+        # Save updated point to disk
+        last_point_path = os.path.join(APP_ROOT, 'last_data_point.sav')
+        joblib.dump(last_point, last_point_path)
+        logger.info(f"Updated last data point: {date} - ${price:.2f}")
+    except Exception as e:
+        logger.error(f"Failed to save last data point: {e}")
+
 def get_realtime_price():
-    """Fetch real-time oil price with NaN protection"""
+    """Fetch real-time oil price with NaN protection and automatic date updates"""
     try:
         logger.info("Fetching real-time data...")
         
@@ -149,21 +171,41 @@ def get_realtime_price():
             valid_close = oil_data['Close'].dropna()
             if not valid_close.empty:
                 price = safe_float(valid_close.iloc[-1])
-                return price, valid_close.index[-1].to_pydatetime()
+                date = valid_close.index[-1].to_pydatetime()
+                
+                # Ensure date is current (handle timezone and market closure)
+                if date.date() < datetime.now().date():
+                    logger.warning(f"Market data date {date.date()} is older than current date {datetime.now().date()}")
+                    # Use current datetime if market data is stale
+                    date = datetime.now()
+                
+                update_last_point(price, date)
+                return price, date
         
         # Fallback to daily data
         oil_data = yf.download('CL=F', period='1d', progress=False, timeout=5)
         if not oil_data.empty:
             price = safe_float(oil_data['Close'].iloc[-1])
-            return price, oil_data.index[-1].to_pydatetime()
+            date = oil_data.index[-1].to_pydatetime()
+            
+            # Ensure date is current
+            if date.date() < datetime.now().date():
+                logger.warning(f"Daily data date {date.date()} is older than current date {datetime.now().date()}")
+                date = datetime.now()
+            
+            update_last_point(price, date)
+            return price, date
         
-        # Final fallback
-        logger.warning("Using last saved data point")
-        return safe_float(last_point['close']), last_point['date']
+        # Final fallback - use current date if no new data
+        logger.warning("Using last saved data point with current date")
+        update_last_point(safe_float(last_point['close']), datetime.now())
+        return last_point['close'], datetime.now()
         
     except Exception as e:
         logger.error(f"Data fetch error: {e}")
-        return safe_float(last_point['close']), last_point['date']
+        # Update with current date even on error
+        update_last_point(safe_float(last_point['close']), datetime.now())
+        return last_point['close'], datetime.now()
 
 # ====================== FORECAST GENERATION ======================
 def generate_forecast(periods):
@@ -337,11 +379,20 @@ def home():
 @app.route('/health')
 def health_check():
     """Enhanced health check with model status"""
+    # Format date for display
+    last_date = last_point['date']
+    if isinstance(last_date, datetime):
+        last_date_str = last_date.strftime('%Y-%m-%d %H:%M')
+    else:
+        last_date_str = str(last_date)
+    
     status = {
         "app": "running",
         "model_loaded": model is not None,
         "model_type": type(model).__name__ if model else "None",
-        "last_data_point": last_point['date'].isoformat() if 'date' in last_point else None,
+        "last_data_point": last_date_str,
+        "last_data_price": last_point['close'] if 'close' in last_point else None,
+        "current_date": datetime.now().strftime('%Y-%m-%d %H:%M'),
         "model_path": os.path.join(APP_ROOT, 'trained_oil_price_model.sav'),
         "file_exists": os.path.exists(os.path.join(APP_ROOT, 'trained_oil_price_model.sav'))
     }
@@ -352,6 +403,9 @@ if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     logger.info(f"Starting server on port {port}")
     logger.info(f"Application root: {APP_ROOT}")
+    
+    # Initialize with current date
+    update_last_point(last_point['close'], datetime.now())
     
     # Safe model status logging
     if model is not None:
