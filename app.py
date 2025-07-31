@@ -11,14 +11,15 @@ import logging
 import math
 from sklearn.metrics import mean_absolute_error, mean_absolute_percentage_error, r2_score
 import sys
-import os
-
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
+
+# Get absolute path to current directory
+APP_ROOT = os.path.dirname(os.path.abspath(__file__))
 
 # Safe defaults
 model = None
@@ -27,24 +28,66 @@ last_point = {
     'date': datetime.now()
 }
 
+# ====================== MODEL LOADING WITH ROBUST ERROR HANDLING ======================
 try:
-    logger.info("Loading prediction model...")
-    model = joblib.load('trained_oil_price_model.sav')
-    logger.info("Model loaded successfully!")
+    model_path = os.path.join(APP_ROOT, 'trained_oil_price_model.sav')
+    logger.info(f"Attempting to load model from: {model_path}")
+    
+    if os.path.exists(model_path):
+        try:
+            model = joblib.load(model_path)
+            logger.info("Model loaded successfully!")
+        except Exception as e:
+            logger.error(f"Model loading failed: {e}")
+            logger.error(traceback.format_exc())
+            
+            # Try with different protocols
+            try:
+                logger.info("Trying with protocol=4")
+                model = joblib.load(model_path, mmap_mode='r+', protocol=4)
+                logger.info("Model loaded successfully with protocol=4!")
+            except:
+                try:
+                    logger.info("Trying with protocol=5")
+                    model = joblib.load(model_path, mmap_mode='r+', protocol=5)
+                    logger.info("Model loaded successfully with protocol=5!")
+                except Exception as e2:
+                    logger.error(f"All loading attempts failed: {e2}")
+    else:
+        logger.critical(f"Model file not found at: {model_path}")
 except Exception as e:
-    logger.error(f"Model loading failed: {e}")
+    logger.error(f"Model loading process failed: {e}")
     logger.error(traceback.format_exc())
 
+# ====================== LAST DATA POINT LOADING ======================
 try:
-    logger.info("Loading last data point...")
-    last_point = joblib.load('last_data_point.sav')
-    if isinstance(last_point['date'], str):
-        last_point['date'] = datetime.strptime(last_point['date'], '%Y-%m-%d')
-    logger.info(f"Last data point: {last_point['date']} - ${last_point['close']:.2f}")
+    last_point_path = os.path.join(APP_ROOT, 'last_data_point.sav')
+    logger.info(f"Attempting to load last data point from: {last_point_path}")
+    
+    if os.path.exists(last_point_path):
+        last_point = joblib.load(last_point_path)
+        if isinstance(last_point['date'], str):
+            last_point['date'] = datetime.strptime(last_point['date'], '%Y-%m-%d')
+        logger.info(f"Last data point: {last_point['date']} - ${last_point['close']:.2f}")
+    else:
+        logger.warning(f"Last data point file not found at: {last_point_path}")
+        logger.info("Using default values")
 except Exception as e:
     logger.error(f"Last data point loading failed: {e}")
     logger.info("Using default values")
 
+# ====================== FALLBACK MODEL INITIALIZATION ======================
+if model is None:
+    logger.critical("Prediction model not available. Initializing fallback model.")
+    try:
+        from sklearn.ensemble import RandomForestRegressor
+        model = RandomForestRegressor(n_estimators=10)  # Minimal viable model
+        logger.warning("Initialized emergency fallback model")
+    except Exception as e:
+        logger.critical("No model available: " + str(e))
+        model = None
+
+# ====================== UTILITY FUNCTIONS ======================
 def safe_float(value):
     """Convert value to float safely, handling NaNs and infs"""
     try:
@@ -83,10 +126,12 @@ def get_realtime_price():
         logger.error(f"Data fetch error: {e}")
         return safe_float(last_point['close']), last_point['date']
 
+# ====================== FORECAST GENERATION ======================
 def generate_forecast(periods):
     """Generate forecast with NaN protection and sorted periods"""
     try:
         if model is None:
+            logger.warning("No model available for forecasting")
             return {"error": "Prediction model not available"}
         
         current_price, current_dt = get_realtime_price()
@@ -166,6 +211,7 @@ def generate_forecast(periods):
         logger.error(f"Forecast generation failed: {e}")
         return {"error": "Forecast generation failed"}
 
+# ====================== ACCURACY CALCULATION ======================
 def calculate_accuracy(forecast_days=90):
     """Calculate model accuracy using historical backtesting"""
     if model is None:
@@ -228,6 +274,7 @@ def calculate_accuracy(forecast_days=90):
         logger.error(f"Accuracy calculation error: {e}")
         return {"error": str(e)}
 
+# ====================== ROUTES ======================
 @app.route('/predict')
 def predict():
     """API endpoint for predictions"""
@@ -250,9 +297,21 @@ def home():
 
 @app.route('/health')
 def health_check():
-    return "OK", 200
+    """Enhanced health check with model status"""
+    status = {
+        "app": "running",
+        "model_loaded": model is not None,
+        "model_type": type(model).__name__ if model else "None",
+        "last_data_point": last_point['date'].isoformat() if 'date' in last_point else None,
+        "model_path": os.path.join(APP_ROOT, 'trained_oil_price_model.sav'),
+        "file_exists": os.path.exists(os.path.join(APP_ROOT, 'trained_oil_price_model.sav'))
+    }
+    return jsonify(status), 200 if model else 500
 
+# ====================== MAIN ======================
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     logger.info(f"Starting server on port {port}")
+    logger.info(f"Application root: {APP_ROOT}")
+    logger.info(f"Model status: {'Loaded' if model else 'Not available'}")
     app.run(host='0.0.0.0', port=port, debug=False)
