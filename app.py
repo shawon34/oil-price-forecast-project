@@ -10,6 +10,11 @@ import traceback
 import logging
 import math
 from sklearn.metrics import mean_absolute_error, mean_absolute_percentage_error, r2_score
+import sys
+import os
+
+# Ensure current directory is in PATH
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
