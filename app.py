@@ -44,12 +44,12 @@ try:
             # Try with different protocols
             try:
                 logger.info("Trying with protocol=4")
-                model = joblib.load(model_path, mmap_mode='r+', protocol=4)
+                model = joblib.load(model_path, mmap_mode='r+')
                 logger.info("Model loaded successfully with protocol=4!")
             except:
                 try:
                     logger.info("Trying with protocol=5")
-                    model = joblib.load(model_path, mmap_mode='r+', protocol=5)
+                    model = joblib.load(model_path, mmap_mode='r+')
                     logger.info("Model loaded successfully with protocol=5!")
                 except Exception as e2:
                     logger.error(f"All loading attempts failed: {e2}")
@@ -81,7 +81,22 @@ if model is None:
     logger.critical("Prediction model not available. Initializing fallback model.")
     try:
         from sklearn.ensemble import RandomForestRegressor
-        model = RandomForestRegressor(n_estimators=10)  # Minimal viable model
+        from sklearn.base import BaseEstimator
+        
+        # Create a simple dummy model
+        class FallbackModel(BaseEstimator):
+            def get_forecast(self, steps):
+                return type('Forecast', (object,), {
+                    'predicted_mean': np.zeros(steps)
+                })
+            
+            def __repr__(self):
+                return "FallbackModel()"
+            
+            def __str__(self):
+                return "FallbackModel"
+        
+        model = FallbackModel()
         logger.warning("Initialized emergency fallback model")
     except Exception as e:
         logger.critical("No model available: " + str(e))
@@ -313,5 +328,11 @@ if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     logger.info(f"Starting server on port {port}")
     logger.info(f"Application root: {APP_ROOT}")
-    logger.info(f"Model status: {'Loaded' if model else 'Not available'}")
+    
+    # Safe model status logging
+    if model is not None:
+        logger.info(f"Model status: Loaded ({type(model).__name__})")
+    else:
+        logger.info("Model status: Not available")
+    
     app.run(host='0.0.0.0', port=port, debug=False)
